@@ -1,0 +1,152 @@
+Wow... long time since I last wrote something.
+This time I come to write a little bit about Linux Kernel Modules. I am currently studying the 'Linux Device Drivers 3rd Edition' book, and I thought that perhaps writing a little bit as I learn, might help me keep the knowledge fresh.
+I believe that pretty much everything I write here can be found in the book. I will try not to be too repetitive and perhaps bring something new to the table when I can (but there is no guarantee I will be able to do so).
+
+For this first writing, I will start with a char device.
+
+Objective
+Build a simple driver that will create a char device. If this device is opened and a certain string is written into it, the process writing to it will be executed as root. Just for fun :)
+
+<syntaxhighlight lang="c">
+
+</syntaxhighlight>
+
+The <b>dev_t</b> type is defined in the <linux/types.h> file. As of Linux 3.2, it is defined as:
+
+<syntaxhighlight lang="c">
+typedef __u32 __kernel_dev_t;
+typedef __kernel_dev_t      dev_t;
+</syntaxhighlight>
+
+The __u32 type is defined in asm-generic/ll64.h as
+
+<syntaxhighlight lang="c">
+typedef unsigned int __u32;
+</syntaxhighlight>
+
+In <linux/fs.h>
+
+<syntaxhighlight lang="c">
+extern int alloc_chrdev_region(dev_t *dev, unsigned baseminor, unsigned count, const char *name);
+</syntaxhighlight>
+
+The first argument is a pointer to the dev_t structure where your major and minor version will be stored.
+The second argument is the number of the first minor version.
+The third argument is the amount of minor versions you want to reserve, starting from the 'firstminor'.
+The fourth argument is the name of the device that will be displayed by /proc/devices
+
+This function returns 0 on success. Anything else is an error.
+
+So, the first version of the code, that is capable of registering the device, looks like this:
+
+<syntaxhighlight lang="c">
+
+#include <linux/module.h>
+#include <linux/init.h>
+#include <linux/types.h>
+#include <linux/cdev.h>
+#include <linux/fs.h>
+#include <linux/slab.h>
+#include <asm/uaccess.h>
+
+#define FIRST_MINOR  1  // The first minor version
+#define DEVICE_COUNT 2 // Amount of devices we want to be able to create
+
+static int __init genesis_init(void);
+static void __exit genesis_exit(void);
+
+typedef struct _genesis_s {
+
+    dev_t devno;
+    struct cdev device;
+    
+} genesis_t;
+
+genesis_t genesis;
+
+struct file_operations genesis_fops = {
+    .owner = THIS_MODULE,
+};
+
+
+static int __init genesis_init() {
+
+    int err;
+
+    err = alloc_chrdev_region(&genesis.devno, FIRST_MINOR, DEVICE_COUNT, "genesis");
+
+    if(err != 0) {
+        printk(KERN_ALERT "Could not allocate a region for the device. Aborting...\n");
+        return err;
+    }
+
+    cdev_init(&genesis.device, &genesis_fops);
+
+    genesis.device.owner = THIS_MODULE;
+    genesis.device.ops = &genesis_fops;
+
+    err = cdev_add(&genesis.device, genesis.devno, DEVICE_COUNT);
+
+    if(err != 0) {
+        printk(KERN_ALERT "Could not add device. Aborting...\n");
+        return err;
+    }
+    
+
+    printk(KERN_ALERT "Device genesis created succesfully!\n");
+    return 0;
+    
+}
+
+static void __exit genesis_exit() {
+    unregister_chrdev_region(genesis.devno, DEVICE_COUNT);
+
+    printk(KERN_ALERT "Apocalypse now!\n");
+}
+
+module_init(genesis_init);
+module_exit(genesis_exit);
+
+</syntaxhighlight>
+
+Now in order to figure out what major number has been assigned to our driver, we can simply cat /proc/devices and check
+
+$ cat /proc/devices |grep genesis
+249 genesis
+
+So we have major number 249, and minor numbers 1 and 2. You can simply head to /dev and create the nodes for these two:
+
+# mknod genesis1 c 249 1
+# mknod genesis2 c 249 2
+
+
+<>
+struct file_operations {
+    struct module *owner;
+    loff_t (*llseek) (struct file *, loff_t, int);
+    ssize_t (*read) (struct file *, char __user *, size_t, loff_t *);
+    ssize_t (*write) (struct file *, const char __user *, size_t, loff_t *);
+    ssize_t (*aio_read) (struct kiocb *, const struct iovec *, unsigned long, loff_t);
+    ssize_t (*aio_write) (struct kiocb *, const struct iovec *, unsigned long, loff_t);
+    int (*readdir) (struct file *, void *, filldir_t);
+    unsigned int (*poll) (struct file *, struct poll_table_struct *);
+    long (*unlocked_ioctl) (struct file *, unsigned int, unsigned long);
+    long (*compat_ioctl) (struct file *, unsigned int, unsigned long);
+    int (*mmap) (struct file *, struct vm_area_struct *);
+    int (*open) (struct inode *, struct file *);
+    int (*flush) (struct file *, fl_owner_t id);
+    int (*release) (struct inode *, struct file *);
+    int (*fsync) (struct file *, loff_t, loff_t, int datasync);
+    int (*aio_fsync) (struct kiocb *, int datasync);
+    int (*fasync) (int, struct file *, int);
+    int (*lock) (struct file *, int, struct file_lock *);
+    ssize_t (*sendpage) (struct file *, struct page *, int, size_t, loff_t *, int);
+    unsigned long (*get_unmapped_area)(struct file *, unsigned long, unsigned long, unsigned long, unsigned long);
+    int (*check_flags)(int);
+    int (*flock) (struct file *, int, struct file_lock *);
+    ssize_t (*splice_write)(struct pipe_inode_info *, struct file *, loff_t *, size_t, unsigned int);
+    ssize_t (*splice_read)(struct file *, loff_t *, struct pipe_inode_info *, size_t, unsigned int);
+    int (*setlease)(struct file *, long, struct file_lock **);
+    long (*fallocate)(struct file *file, int mode, loff_t offset, loff_t len);
+};
+
